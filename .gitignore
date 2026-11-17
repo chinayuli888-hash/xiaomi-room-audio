@@ -1,0 +1,11 @@
+settings.json
+settings.local.json
+bin/
+*.log
+*.wav
+restore.json
+.env
+.env.*
+__pycache__/
+*.py[cod]
+.venv/
