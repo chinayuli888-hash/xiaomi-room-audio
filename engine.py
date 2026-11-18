@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import ipaddress
 import json
 import logging
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -33,18 +34,43 @@ class Settings:
     ffmpeg: Path
     speaker_names: dict[str, str] = field(default_factory=dict)
     speaker_max_db: dict[str, float] = field(default_factory=dict)
+    speaker_ports: dict[str, int] = field(default_factory=dict)
 
     def receiver_db(self, host):
         return self.speaker_max_db.get(host, RECEIVER_DB)
 
+    def receiver_port(self, host):
+        return self.speaker_ports.get(host, 7000)
+
+    def for_speakers(self, speakers, profiles=None):
+        """Only this fresh discovery can select receivers; IPs are not identities."""
+        speakers = tuple(speakers)
+        hosts = [speaker.host for speaker in speakers]
+        if len(hosts) > 8 or len(set(hosts)) != len(hosts):
+            raise ValueError("一次最多播放 8 台不同的本地音箱。")
+        profiles = profiles or {}
+        names, limits, ports = {}, {}, {}
+        for speaker in speakers:
+            profile = profiles.get(speaker.identifier, {})
+            if not isinstance(profile, dict):
+                profile = {}
+            name = profile.get("name")
+            names[speaker.host] = name if isinstance(name, str) and name.strip() else speaker.name
+            db = profile.get("max_db", RECEIVER_DB)
+            if isinstance(db, bool) or not isinstance(db, (float, int)) or not MIN_RECEIVER_DB <= db <= 0:
+                db = RECEIVER_DB
+            limits[speaker.host] = db
+            if isinstance(speaker.port, bool) or not isinstance(speaker.port, int) or not 1 <= speaker.port <= 65535:
+                raise ValueError("音箱广播的端口无效，请重新搜索。")
+            ports[speaker.host] = speaker.port
+        return Settings(hosts, self.ffmpeg, names, limits, ports)
+
     @classmethod
     def load(cls, path):
-        if not path.is_file():
-            raise ValueError("缺少 settings.json。请复制 settings.example.json 并填写音箱 IP。")
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        hosts = data.get("hosts")
-        if not isinstance(hosts, list) or not 1 <= len(hosts) <= 8:
-            raise ValueError("请在 hosts 中填写 1 至 8 台支持 AirPlay 2 的音箱。")
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
+        hosts = data.get("hosts", [])
+        if not isinstance(hosts, list) or not 0 <= len(hosts) <= 8:
+            raise ValueError("hosts 如保留旧配置，须为不超过 8 台音箱的列表；界面只使用实时搜索结果。")
         parsed = [ipaddress.IPv4Address(host) for host in hosts]
         if any(ip.is_multicast or ip.is_unspecified or ip.is_loopback for ip in parsed):
             raise ValueError("hosts 必须是局域网音箱的单播 IPv4 地址。")
@@ -109,6 +135,14 @@ class SpeakerMix:
 
     def gains(self):
         return self.snapshot()[1]
+
+    def restore_ratios(self, ratios):
+        """Carry the current session's balance across a fresh identity lookup."""
+        with self._lock:
+            for host in self._ratios:
+                ratio = ratios.get(host, 1.0)
+                if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) and math.isfinite(ratio) and ratio >= 0:
+                    self._ratios[host] = ratio
 
     def set_master(self, level):
         with self._lock:
@@ -269,10 +303,17 @@ class SystemVolume:
 
 
 class Player:
-    def __init__(self, settings, state_dir, emit, mix):
+    def __init__(self, settings, state_dir, emit, mix, network=None):
         self.settings, self.state_dir, self.emit = settings, state_dir, emit
         self.mix = mix
+        self.network = network
         self.stop = threading.Event()
+
+    def check_network(self):
+        if self.network is not None:
+            from discovery import current_network
+            if current_network().fingerprint != self.network.fingerprint:
+                raise RuntimeError("网络已变化，旧连接已停止，请搜索当前网络中的音箱。")
 
     def sync_level(self, level):
         self.mix.set_master(level)
@@ -283,19 +324,26 @@ class Player:
         issue = None
         journal = self.state_dir / "restore.json"
         try:
+            if self.stop.is_set():
+                return
+            if not self.settings.hosts:
+                raise RuntimeError("请先搜索当前网络中的音箱。")
+            self.check_network()
             with WindowsAudio() as win:
                 recover(win, journal)
                 route = Route(win, journal)
                 try:
                     receiver_levels = {ip: self.settings.receiver_db(ip) for ip in self.settings.hosts}
                     group = AirPlay2Group(
-                        [{"host": ip, "name": "RoomAudio", "volume_db": db}
+                        [{"host": ip, "port": self.settings.receiver_port(ip),
+                          "name": "RoomAudio", "volume_db": db}
                          for ip, db in receiver_levels.items()],
                         codec="alac", volume_db=RECEIVER_DB, latency_frames=audio.LATENCY_LOW,
                     )
                     group.setup_all(self.stop)
                     if self.stop.is_set():
                         return
+                    self.check_network()
                     online = sum(m.cipher is not None for m in group.members)
                     if online != len(self.settings.hosts):
                         for m in group.members:
@@ -336,8 +384,12 @@ class Player:
         finally:
             if group is not None:
                 # Each member requests TEARDOWN independently, including partial setup.
-                with ThreadPoolExecutor(max_workers=len(group.members)) as pool:
-                    list(pool.map(lambda member: member.session.teardown(), group.members))
+                try:
+                    with ThreadPoolExecutor(max_workers=len(group.members)) as pool:
+                        list(pool.map(lambda member: member.session.teardown(), group.members))
+                except Exception as exc:
+                    log.exception("Receiver teardown failed")
+                    issue = issue or str(exc)
             if capture is not None:
                 try:
                     capture.close()

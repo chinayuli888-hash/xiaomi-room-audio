@@ -21,6 +21,11 @@ SF Symbols, fonts, Mbed TLS, Ed25519 C code, or AirFlash capture/PTP code.
 
 ## Installed separately
 
+- [python-zeroconf / zeroconf](https://pypi.org/project/zeroconf/): **LGPL-2.1-or-later**,
+  used for local IPv4 DNS-SD discovery. Installed via pip from `requirements.txt`;
+  its source and binaries are not vendored in this repository. The upstream
+  [COPYING](https://github.com/python-zeroconf/python-zeroconf/blob/master/COPYING)
+  and distribution notices apply to that separately installed package.
 - [NumPy](https://numpy.org/): BSD-3-Clause, with its distribution's own notices.
 - [cryptography](https://cryptography.io/): Apache-2.0 OR BSD-3-Clause, with its
   dependency notices.

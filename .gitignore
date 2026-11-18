@@ -1,5 +1,7 @@
 settings.json
 settings.local.json
+speaker_profiles.json
+speaker_profiles.*.json
 bin/
 *.log
 *.wav
