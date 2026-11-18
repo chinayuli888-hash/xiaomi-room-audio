@@ -12,8 +12,8 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     args.out.mkdir(parents=True, exist_ok=True)
-    files = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", "HEAD"],
-                                    cwd=root).decode("utf-8").splitlines()
+    files = subprocess.check_output(["git", "ls-tree", "-rz", "--name-only", "HEAD"],
+                                    cwd=root).decode("utf-8").split("\0")[:-1]
     forbidden = {"settings.json", "settings.local.json", "restore.json", ".env"}
     for name in files:
         path = Path(name)
