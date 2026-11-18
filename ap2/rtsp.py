@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-only AND MIT
+# Xiaomi Room Audio: Python implementation and modifications, 2026-11-18.
+# RTSP transport behavior follows pyatv (Pierre Ståhl, MIT) and protocol references.
+# New project work is GPL-3.0-only; see ../NOTICE and ../docs/PROVENANCE.md.
 """Blocking RTSP/HTTP connection over one TCP socket, with optional HAP crypto
 processors on the wire (transparent encrypt/decrypt of the byte stream).
 """

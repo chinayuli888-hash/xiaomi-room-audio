@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-only AND MIT
+# Xiaomi Room Audio: Python adaptation and modifications, 2026-11-18.
+# Pairing sequencing adapts pyatv (Copyright (c) 2020 Pierre Ståhl, MIT).
+# srptools remains a separate, unmodified BSD-3-Clause component.
+# New project work is GPL-3.0-only; see ../NOTICE and ../docs/PROVENANCE.md.
 """HAP transient SRP-6a client (3072-bit group, SHA-512, PIN 3939).
 
 Mirrors pyatv auth/hap_srp.py step1/step2/step4 behaviour for the transient

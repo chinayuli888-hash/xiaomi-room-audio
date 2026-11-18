@@ -1,0 +1,53 @@
+Original header from src/outputs/airplay.c:
+
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
+Original header from src/outputs/raop.c:
+
+/*
+ * Copyright (C) 2012-2020 Espen Jürgensen <espenjurgensen@gmail.com>
+ * Copyright (C) 2010-2011 Julien BLACHE <jb@jblache.org>
+ *
+ * RAOP AirTunes v2
+ *
+ * Crypto code adapted from VideoLAN
+ *   Copyright (C) 2008 the VideoLAN team
+ *   Author: Michael Hanselmann
+ *   GPLv2+
+ *
+ * ALAC encoding adapted from raop_play
+ *   Copyright (C) 2005 Shiro Ninomiya <shiron@snino.com>
+ *   GPLv2+
+ *
+ * ALAC update to add end tags for compatibility with the FFmpeg ALAC decoder
+ *   Copyright (C) 2023 Mike Brady <4265913+mikebrady@users.noreply.github.com>
+ *   GPLv2+
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */

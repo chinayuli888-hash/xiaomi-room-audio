@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-only AND MIT AND Apache-2.0
+# Xiaomi Room Audio: Python adaptation and modifications, 2026-11-18.
+# Timestamp helpers adapt pyatv (Copyright (c) 2020 Pierre Ståhl, MIT).
+# The ALAC bit-packer adapts airplay2-sender-cpp by Andreas Wendorf (Apache-2.0).
+# New project work is GPL-3.0-only; upstream portions retain their notices.
+# See ../NOTICE and ../docs/PROVENANCE.md for the source and license mapping.
 """Timeline (NTP/RTP timestamp) helpers, WAV loading and RTP packet builders."""
 
 import struct

@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-only AND MIT AND Apache-2.0
+# Xiaomi Room Audio: Python adaptation and modifications, 2026-11-18.
+# Protocol sequencing follows pyatv (Pierre Ståhl, MIT) and
+# airplay2-sender-cpp (Andreas Wendorf, Apache-2.0), with OwnTone references.
+# New project work is GPL-3.0-only; upstream portions retain their notices.
+# See ../NOTICE and ../docs/PROVENANCE.md for the source and license mapping.
 """One AirPlay 2 (HAP transient) sender session to a single receiver."""
 
 import plistlib
@@ -152,9 +158,9 @@ class AirPlay2Session:
         m4 = tlv8.read_tlv(r.body)
         if tlv8.TlvValue.Error in m4:
             raise RuntimeError(f"pair-setup M4 error TLV: {m4[tlv8.TlvValue.Error]!r}")
-        if tlv8.TlvValue.Proof in m4:
-            if not self.srp.verify_server_proof(m4[tlv8.TlvValue.Proof]):
-                self.stats.events.append("server proof mismatch (continuing, lenient)")
+        proof = m4.get(tlv8.TlvValue.Proof)
+        if proof is None or not self.srp.verify_server_proof(proof):
+            raise RuntimeError("Receiver SRP proof verification failed")
         self.shared = self.srp.shared
         if len(self.shared) != 64:
             raise RuntimeError(f"unexpected SRP K length {len(self.shared)}")

@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-only AND MIT
+# Xiaomi Room Audio: Python adaptation and modifications, 2026-11-18.
+# Adapted from pyatv (Copyright (c) 2020 Pierre Ståhl, MIT).
+# New project work is GPL-3.0-only; upstream notices remain in ../NOTICE.
 """HomeKit TLV8 codec (one level, >255B fragmentation). Ported from pyatv."""
 
 from enum import IntEnum

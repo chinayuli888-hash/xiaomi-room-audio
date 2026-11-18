@@ -1,0 +1,69 @@
+Xiaomi Room Audio / 小米全屋播放
+Copyright (C) 2026 Xiaomi Room Audio contributors
+
+New project work and the combined source distribution are licensed under
+GNU GPL version 3 only (GPL-3.0-only). Upstream portions keep their original
+licenses, copyright notices and permissions. The full GPL text is in LICENSE.
+
+The inherited Python sender is a modified adaptation, not an unmodified
+upstream product. Project changes include Windows/Tk UI and tray support,
+output routing/recovery, Windows master-volume notifications, proportional
+per-speaker gains, per-receiver maximum levels, bounded capture queues,
+fail-closed receiver-proof verification, tests and documentation.
+Pinned sources and file mappings: docs/PROVENANCE.md.
+
+pyatv
+Copyright (c) 2020 Pierre Ståhl and contributors
+MIT License: licenses/pyatv-MIT.txt.
+Adapted/referenced: TLV8, NTP/RTP helpers, encrypted HAP framing, pairing
+and RTSP/RTP/sync/timing transport behavior. The timing module credits
+philippe44's RAOP-Player.
+
+airplay2-sender-cpp
+Copyright 2026 Andreas Wendorf (Akustikrausch)
+Apache-2.0: licenses/Apache-2.0.txt.
+Original NOTICE: licenses/airplay2-sender-cpp-NOTICE.txt.
+Original upstream credits: licenses/airplay2-sender-cpp-THIRD-PARTY-NOTICES.txt.
+Adapted/referenced: ALAC packing, AP2 setup/event sequencing and
+minimum-response protocol behavior.
+
+srptools 2.0.0
+Copyright (c) 2017-2022 Igor 'idle sign' Starikov
+Unmodified source retained under BSD-3-Clause: srptools/LICENSE.
+
+OwnTone / forked-daapd
+Copyright (C) 2012-2020 Espen Jürgensen
+Copyright (C) 2010-2011 Julien BLACHE
+Relevant headers also credit the VideoLAN team, Shiro Ninomiya and Mike Brady.
+Exact headers: licenses/OwnTone-headers.txt.
+Relevant output source is GPL-2.0-or-later. Any derived portions in the combined
+program use the GPLv3 option. GPLv2 text: licenses/GPL-2.0-OwnTone.txt.
+
+saundo
+Copyright 2026 daikaiyu
+Historical interoperability reference. Upstream project GPL-3.0-only; some
+sender/crypto files Apache-2.0. Original NOTICE: licenses/saundo-NOTICE.txt.
+No Go package, executable, SF Symbol, font or AirFlash code is bundled.
+
+Shairport Sync ALAC reference
+Copyright (c) 2005 David Hammerton
+MIT notice from the referenced decoder: licenses/Shairport-alac-MIT.txt.
+
+libraop / RAOP-Player
+(c) Philippe, philippe_44@outlook.com
+Original license statement: licenses/RAOP-Player-MIT.txt.
+Credit follows pyatv's timing module; no C library is bundled.
+
+AudioDeviceCmdlets
+Copyright (c) 2016-2022 Francois Gendron <fg@frgn.ca>
+MIT: licenses/AudioDeviceCmdlets-MIT.txt.
+Reference for the Windows PolicyConfig COM interface signature.
+
+Preserved upstream NOTICE files retain their original context and can list
+components not present here. Runtime packages, Python/Tk, FFmpeg and
+VB-Audio Virtual Cable are installed separately under their own terms.
+See THIRD_PARTY.md.
+
+This independent interoperability project is not affiliated with or endorsed
+by Xiaomi or Apple. Product names identify compatibility and grant no
+trademark rights.

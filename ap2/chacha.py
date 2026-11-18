@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-only AND MIT
+# Xiaomi Room Audio: Python adaptation and modifications, 2026-11-18.
+# Framing adapts pyatv (Copyright (c) 2020 Pierre Ståhl, MIT).
+# New project work is GPL-3.0-only; upstream notices remain in ../NOTICE.
 """ChaCha20-Poly1305 layers: HAP control/event channel framing + audio payload.
 
 Nonce convention (HAP): 12-byte IETF nonce = 4 zero bytes || 8-byte LE counter.

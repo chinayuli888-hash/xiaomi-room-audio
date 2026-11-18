@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from tray import APP_NAME, TrayIcon, show_existing
+from volume_slider import VolumeSlider
 
 ROOT = Path(__file__).resolve().parent
 ICON = ROOT / "room_audio.ico"
@@ -92,13 +93,12 @@ class Window:
             speaker_icon(row).grid(row=0, column=0, padx=(0, 8))
             name = settings.speaker_names.get(host) or f"音箱 {index}"
             tk.Label(row, text=name, bg=ROW, fg=INK, font=(FONT, 10),
-                     anchor="w", justify="left", wraplength=138, width=15).grid(
+                     anchor="w", justify="left", wraplength=122, width=13).grid(
                          row=0, column=1, sticky="w", padx=(0, 9))
             label = tk.StringVar(value="—")
             value = tk.DoubleVar()
-            slider = ttk.Scale(row, orient="horizontal", from_=0, to=100, length=116,
-                               variable=value, style="Room.Horizontal.TScale", takefocus=True,
-                               command=lambda amount, host=host: self.adjust(host, amount))
+            slider = VolumeSlider(row, variable=value,
+                                  command=lambda amount, host=host: self.adjust(host, amount))
             slider.grid(row=0, column=2, sticky="ew")
             tk.Label(row, textvariable=label, bg=ROW, fg=INK,
                      font=("Segoe UI", 10, "bold"), anchor="e", width=5).grid(
@@ -125,10 +125,6 @@ class Window:
     def configure_styles(self):
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure("Room.Horizontal.TScale", background=GREEN, troughcolor="#293E4B",
-                        bordercolor=ROW, darkcolor=ROW, lightcolor=ROW,
-                        sliderlength=16, sliderthickness=16)
-        style.map("Room.Horizontal.TScale", background=[("disabled", FAINT), ("active", "#7DEEBE")])
         style.configure("Play.TButton", font=(FONT, 10, "bold"), foreground=GREEN_INK,
                         background=GREEN, bordercolor=GREEN, darkcolor=GREEN,
                         lightcolor=GREEN, padding=(14, 8))

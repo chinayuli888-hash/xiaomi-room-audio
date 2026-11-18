@@ -2,7 +2,7 @@
 
 **把 Windows 的声音送到全屋音箱。** 在电脑上照常看视频、听歌，用 Windows 音量键控制整屋，再用每台音箱的滑杆调好各个房间的音量。
 
-[使用说明](USAGE.md) · [版本说明](CHANGELOG.md) · [第三方许可说明](THIRD_PARTY.md)
+[下载 0.6 预览版](https://github.com/chinayuli888-hash/xiaomi-room-audio/releases/tag/v0.6.0-preview) · [使用说明](USAGE.md) · [版本说明](CHANGELOG.md) · [来源核查](docs/PROVENANCE.md)
 
 ![一台 Windows 电脑通过局域网向三台音箱播放](docs/overview.svg)
 
@@ -16,6 +16,10 @@
 | 低音量起播 | 起播最多 10%，保留系统原有的静音状态。每台音箱可配置自己的音量上限。 |
 | 托盘播放 | 最小化留在任务栏；点「×」收进托盘，播放继续；点「退出」停止投放并恢复原来的 Windows 播放输出。 |
 | 一眼看到连接状态 | 面板显示当前 Wi-Fi、音箱名称和在线数量。 |
+
+![小米全屋播放界面示例](docs/interface.png)
+
+界面示例：演示名称与音量，不代表一次在线会话。
 
 ## 快速上手
 
@@ -36,4 +40,4 @@
 
 当前是独立开发的 **Windows 0.6 预览版**，与小米和 Apple 官方无关。电脑和音箱需在同一局域网，本版手动配置 1–8 台，当前只验证了上述三台小米音箱。投放使用 AirPlay 2，不通过 AirDrop 或蓝牙。已有蓝牙设备仍可按 Windows 原来的方式使用。
 
-本仓库用于私有预览。应用许可证和 AirPlay 发送模块的来源审核尚未完成；第三方信息见 [许可说明](THIRD_PARTY.md)。
+组合发布采用 [GPL-3.0](LICENSE)。第三方原有的 MIT、Apache-2.0 和 BSD 声明均随源码保留；详细的上游版本、改编关系和来源证据见 [来源核查](docs/PROVENANCE.md) 和 [第三方许可说明](THIRD_PARTY.md)。

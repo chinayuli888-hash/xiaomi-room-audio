@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-only AND MIT
+# Xiaomi Room Audio: group sender and per-speaker gain modifications, 2026-11-18.
+# Timing follows the pyatv-derived helpers in audio.py; retain ../NOTICE.
+# New project work is GPL-3.0-only; see ../docs/PROVENANCE.md.
 """M3 group sender: one process, one audio clock, one shared RTP/NTP timeline,
 one AP2 session per receiver.
 
