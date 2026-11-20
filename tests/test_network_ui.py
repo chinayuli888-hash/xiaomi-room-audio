@@ -92,14 +92,14 @@ class DeviceCatalogTests(unittest.TestCase):
                 self.assertFalse(self.catalog.fail(token))
                 self.assert_empty()
 
-    def test_eight_receivers_supported_but_oversized_batch_is_atomic(self):
+    def test_discovery_can_list_more_than_eight_for_user_selection(self):
         self.accept(devices=[speaker(i) for i in range(20, 28)])
         self.assertEqual(len(self.catalog.devices), 8)
         self.assertTrue(self.catalog.can_play(HOME))
         token = self.catalog.begin(HOME)
-        with self.assertRaises(ValueError):
-            self.catalog.apply(token, HOME, [speaker(i) for i in range(20, 29)])
-        self.assert_empty()
+        self.assertTrue(self.catalog.apply(token, HOME, [speaker(i) for i in range(20, 32)]))
+        self.assertEqual(len(self.catalog.devices), 12)
+        self.assertTrue(self.catalog.can_play(HOME))
 
     def test_duplicate_host_batch_is_rejected_even_with_different_identities(self):
         token = self.catalog.begin(HOME)

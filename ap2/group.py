@@ -224,7 +224,7 @@ class AirPlay2Group:
         self._get_head_ts = get_head_ts
         self._start_sync_threads(get_rtptime, get_head_ts)
 
-        clock_start = time.monotonic()
+        clock_start = time.perf_counter()
         total = 0
         for i in range(packets):
             off = i * audio.FRAMES_PER_PACKET * audio.CHANNELS
@@ -273,7 +273,7 @@ class AirPlay2Group:
             rtptime = head_ts - start_ts + self.latency_frames
 
             target = clock_start + (head_ts - start_ts) / audio.RATE
-            sleep_for = target - time.monotonic()
+            sleep_for = target - time.perf_counter()
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
@@ -319,7 +319,14 @@ class AirPlay2Group:
         self._get_head_ts = get_head_ts
         self._start_sync_threads(get_rtptime, get_head_ts)
 
-        clock_start = time.monotonic()
+        clock_start = time.perf_counter()
+        period = audio.FRAMES_PER_PACKET / audio.RATE
+        self.live_stats = {"packet_cycles": 0, "source_underruns": 0, "send_errors": 0,
+                           "initial_consecutive_underruns": 0, "after_first_pcm_underruns": 0,
+                           "first_pcm_after_stream_ms": None,
+                           "max_provider_ms": 0.0, "max_encode_send_ms": 0.0,
+                           "max_lateness_ms": 0.0, "late_over_packet": 0,
+                           "pacer": "time.sleep", "clock": "perf_counter"}
         total = 0
         i = 0
         silence = np.zeros(audio.FRAMES_PER_PACKET * audio.CHANNELS,
@@ -328,9 +335,26 @@ class AirPlay2Group:
         while not stop_event.is_set():
             if max_packets and i >= max_packets:
                 break
+            cycle_start = time.perf_counter()
+            lateness = max(0.0, cycle_start - (clock_start + i * period))
+            self.live_stats["max_lateness_ms"] = max(self.live_stats["max_lateness_ms"],
+                                                    lateness * 1000)
+            self.live_stats["late_over_packet"] += int(lateness > period)
             chunk = provider()
+            provided_at = time.perf_counter()
+            self.live_stats["max_provider_ms"] = max(self.live_stats["max_provider_ms"],
+                                                    (provided_at - cycle_start) * 1000)
             if chunk is None or len(chunk) < len(silence):
+                self.live_stats["source_underruns"] += 1
+                phase = ("initial_consecutive_underruns"
+                         if self.live_stats["first_pcm_after_stream_ms"] is None
+                         else "after_first_pcm_underruns")
+                self.live_stats[phase] += 1
                 chunk = silence
+            elif self.live_stats["first_pcm_after_stream_ms"] is None:
+                # Valid zero-valued PCM still counts as source data; this is
+                # availability timing, never a signal-level or prewarm test.
+                self.live_stats["first_pcm_after_stream_ms"] = (provided_at - clock_start) * 1000
 
             gains = speaker_gains() if speaker_gains is not None else {}
             encoded = {}
@@ -362,7 +386,7 @@ class AirPlay2Group:
                 try:
                     s._sock_audio.sendto(wire, (s.host, s.stats.data_port))
                 except OSError:
-                    pass
+                    self.live_stats["send_errors"] += 1
                 t1 = time.perf_counter()
                 s.cache_audio(seq, wire)
                 with m.lock:
@@ -380,15 +404,24 @@ class AirPlay2Group:
             head_ts += audio.FRAMES_PER_PACKET
             rtptime = head_ts - start_ts + self.latency_frames
             i += 1
+            self.live_stats["packet_cycles"] = i
+            self.live_stats["max_encode_send_ms"] = max(
+                self.live_stats["max_encode_send_ms"], (time.perf_counter() - provided_at) * 1000)
 
             target = clock_start + (head_ts - start_ts) / audio.RATE
-            sleep_for = target - time.monotonic()
+            sleep_for = target - time.perf_counter()
             if sleep_for > 0:
-                stop_event.wait(sleep_for)
+                # Python 3.11+ uses a high-resolution timer on Windows.
+                # Event.wait can round an 8 ms packet wait to the 15.6 ms tick.
+                # QPC is essential here: Python 3.12's monotonic() on Windows
+                # uses coarse GetTickCount64. Requested waits stay <= one packet.
+                time.sleep(min(sleep_for, period))
 
+        self.live_stats["elapsed_seconds"] = round(time.perf_counter() - clock_start, 3)
         return {
             "members": len(self.members),
             "packets": total,
+            "timing": dict(self.live_stats),
             "per_member": [
                 {"host": m.session.host, "packets": len(m.packet_log),
                  "data_port": m.session.stats.data_port,

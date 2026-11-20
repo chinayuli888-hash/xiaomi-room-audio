@@ -3,6 +3,7 @@ import argparse
 import ctypes
 import json
 import logging
+import math
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from tkinter import messagebox, ttk
 
 from tray import APP_NAME, TrayIcon, show_existing
 from volume_slider import VolumeSlider
+from speaker_preferences import MAX_RATIO, PreferencesError
 
 ROOT = Path(__file__).resolve().parent
 ICON = ROOT / "room_audio.ico"
@@ -59,6 +61,7 @@ class Window:
     def __init__(self, root, settings, state_dir):
         from engine import SpeakerMix
         from device_catalog import DeviceCatalog
+        from speaker_preferences import SpeakerPreferences
 
         self.root, self.base_settings, self.state_dir = root, settings, state_dir
         self.settings = settings.for_speakers(())
@@ -69,12 +72,15 @@ class Window:
         self.scanning = self.stopping = False
         self.pending_scan = None
         self.balances = {}
-        try:
-            self.profiles = json.loads((state_dir / "speaker_profiles.json").read_text(encoding="utf-8-sig"))
-            if not isinstance(self.profiles, dict):
-                self.profiles = {}
-        except (OSError, ValueError):
-            self.profiles = {}
+        self.preferences = SpeakerPreferences(state_dir / "speaker_profiles.json")
+        self.profiles = self.preferences.profiles
+        self.selection, self.choice_vars = {}, {}
+        self.requested_ids = None
+        self.save_after = None
+        self.preferences_failed = False
+        self.balance_save_failed = False
+        self.preferences_issue = ""
+        self.mix_devices = ()
         self.events = SimpleQueue()
         self.player = self.thread = None
         self.tray = None
@@ -89,6 +95,7 @@ class Window:
         root.iconbitmap(default=str(ICON))
         root.configure(bg=BG)
         root.protocol("WM_DELETE_WINDOW", self.hide_window)
+        root.bind("<Control-q>", lambda event: self.exit_app())
 
         self.configure_styles()
         main = tk.Frame(root, bg=BG, padx=20, pady=18)
@@ -107,8 +114,16 @@ class Window:
         self.scan.state(["disabled"])
         tk.Label(main, textvariable=self.status, bg=BG, fg=DIM, anchor="w",
                  font=(FONT, 9), wraplength=410).pack(fill="x", pady=(0, 8))
-        self.speaker_list = tk.Frame(main, bg=BG)
-        self.speaker_list.pack(fill="both", expand=True)
+        list_area = tk.Frame(main, bg=BG)
+        list_area.pack(fill="both", expand=True)
+        self.list_canvas = tk.Canvas(list_area, bg=BG, height=47, highlightthickness=0)
+        self.list_canvas.pack(side="left", fill="both", expand=True)
+        self.list_scroll = ttk.Scrollbar(list_area, orient="vertical", command=self.list_canvas.yview)
+        self.list_canvas.configure(yscrollcommand=self.list_scroll.set)
+        self.speaker_list = tk.Frame(self.list_canvas, bg=BG)
+        list_window = self.list_canvas.create_window((0, 0), window=self.speaker_list, anchor="nw")
+        self.speaker_list.bind("<Configure>", lambda _: self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all")))
+        self.list_canvas.bind("<Configure>", lambda event: self.list_canvas.itemconfigure(list_window, width=event.width))
         self.render_devices()
 
         actions = tk.Frame(main, bg=BG)
@@ -129,14 +144,21 @@ class Window:
 
     def render_devices(self):
         self.rows.clear()
+        self.choice_vars.clear()
         for widget in self.speaker_list.winfo_children():
             widget.destroy()
-        for index, host in enumerate(self.settings.hosts, start=1):
+        for speaker in self.catalog.devices:
+            host = speaker.host
             row = tk.Frame(self.speaker_list, bg=ROW, padx=11, pady=6)
             row.pack(fill="x", pady=(0, 5))
             row.columnconfigure(2, weight=1)
-            speaker_icon(row).grid(row=0, column=0, padx=(0, 8))
-            name = self.settings.speaker_names.get(host) or f"音箱 {index}"
+            choice = tk.BooleanVar(value=self.selection.get(speaker.identifier, False))
+            check = ttk.Checkbutton(row, variable=choice, style="Speaker.TCheckbutton",
+                                    command=lambda identity=speaker.identifier: self.choice_changed(identity))
+            check.grid(row=0, column=0, padx=(0, 8))
+            self.choice_vars[speaker.identifier] = (choice, check)
+            profile = self.profiles.get(speaker.identifier, {})
+            name = (profile.get("name") if isinstance(profile, dict) else None) or speaker.name
             tk.Label(row, text=name, bg=ROW, fg=INK, font=(FONT, 10),
                      anchor="w", justify="left", wraplength=122, width=13).grid(
                          row=0, column=1, sticky="w", padx=(0, 9))
@@ -149,13 +171,32 @@ class Window:
                      font=("Segoe UI", 10, "bold"), anchor="e", width=5).grid(
                          row=0, column=3, sticky="e", padx=(6, 0))
             self.rows[host] = (label, value, slider)
+            for widget in row.winfo_children():
+                widget.bind("<MouseWheel>", self.scroll_devices)
+            row.bind("<MouseWheel>", self.scroll_devices)
 
         if not self.rows:
             tk.Label(self.speaker_list, text="尚未发现当前网络的音箱", bg=ROW, fg=DIM,
                      font=(FONT, 10), pady=14).pack(fill="x")
         self.root.update_idletasks()
+        content_height = self.speaker_list.winfo_reqheight()
+        children = self.speaker_list.winfo_children()
+        first_six = children[5].winfo_y() + children[5].winfo_height() + 5 if len(self.rows) > 6 else content_height
+        visible_height = min(6 * 56, max(47, first_six))
+        self.list_canvas.configure(height=visible_height)
+        if content_height > visible_height:
+            self.list_scroll.pack(side="right", fill="y")
+        else:
+            self.list_scroll.pack_forget()
+        self.root.update_idletasks()
         width = max(452, self.root.winfo_width(), self.root.winfo_reqwidth())
         self.root.geometry(f"{width}x{max(260, self.root.winfo_reqheight())}")
+        logging.info("Panel rendered: rows=%d selected=%d", len(self.rows), len(self.selected_speakers()))
+
+    def scroll_devices(self, event):
+        if self.speaker_list.winfo_reqheight() > self.list_canvas.winfo_height():
+            self.list_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
 
     def configure_styles(self):
         style = ttk.Style(self.root)
@@ -171,6 +212,10 @@ class Window:
                         lightcolor=CARD, padding=(11, 8))
         style.map("Exit.TButton", foreground=[("disabled", FAINT)],
                   background=[("active", "#304657")])
+        style.configure("Speaker.TCheckbutton", background=ROW, foreground=GREEN,
+                        indicatorbackground=BG, indicatorforeground=GREEN)
+        style.map("Speaker.TCheckbutton", background=[("active", ROW)],
+                  indicatorbackground=[("selected", GREEN), ("disabled", ROW)])
 
     def watch_network(self):
         stop = self.monitor_stop
@@ -192,21 +237,107 @@ class Window:
         threading.Thread(target=watch, name="network-monitor", daemon=True).start()
 
     def remember_balance(self):
-        if not self.playing:
+        try:
+            ratios = self.mix.ratios()
+            updates = {speaker.identifier: ratios[speaker.host] for speaker in self.mix_devices
+                       if speaker.host in ratios}
+            # Validate the whole snapshot before mutating any saved device record.
+            if any(isinstance(ratio, bool) or not math.isfinite(ratio) or not 0 <= ratio <= MAX_RATIO
+                   for ratio in updates.values()):
+                raise ValueError(f"当前比例超出可保存范围 0–{MAX_RATIO:g}，请降低单台比例后重试。")
+            for identity in updates:
+                if not isinstance(self.profiles.get(identity, {}), dict):
+                    raise PreferencesError("设备档案格式无法安全修改，原有内容已保留。")
+            for identity, ratio in updates.items():
+                self.balances[identity] = ratio
+                self.preferences.set_ratio(identity, ratio)
+            self.balance_save_failed = False
+            return True
+        except (ValueError, TypeError, PreferencesError) as exc:
+            self.balance_save_failed = True
+            self.preference_failure(exc)
+            return False
+
+    def preference_failure(self, error):
+        self.preferences_failed = True
+        self.preferences_issue = str(error)
+        logging.error("Could not save speaker preferences: %s", error)
+        self.status.set(f"设置未保存：{error}")
+        self.play.state(["disabled"])
+
+    def save_preferences(self):
+        if self.save_after is not None:
+            try:
+                self.root.after_cancel(self.save_after)
+            except tk.TclError:
+                pass
+            self.save_after = None
+        if getattr(self, "balance_save_failed", False):
+            return False
+        try:
+            self.preferences.save()
+            self.preferences_failed = False
+            self.preferences_issue = ""
+            return True
+        except (OSError, ValueError, PreferencesError) as exc:
+            self.preference_failure(exc)
+            return False
+
+    def schedule_preferences_save(self):
+        if self.save_after is not None:
+            self.root.after_cancel(self.save_after)
+        self.save_after = self.root.after(400, self.save_preferences)
+
+    def selected_speakers(self):
+        return tuple(speaker for speaker in self.catalog.devices if self.selection.get(speaker.identifier, False))
+
+    def update_play_state(self):
+        available = (not self.closing and not self.scanning and not self.stopping
+                     and not (self.thread and self.thread.is_alive())
+                     and not self.preferences_failed and self.catalog.can_play(self.network_info)
+                     and 1 <= len(self.selected_speakers()) <= 8)
+        self.play.state(["!disabled"] if available else ["disabled"])
+
+    def apply_selection(self):
+        from engine import SpeakerMix
+        devices = self.selected_speakers()
+        if len(devices) > 8:
+            devices = ()
+        self.settings = self.base_settings.for_speakers(devices, self.profiles)
+        self.mix_devices = tuple(devices)
+        self.mix = SpeakerMix(self.settings.hosts)
+        self.mix.restore_ratios({speaker.host: self.preferences.ratio(speaker.identifier) for speaker in devices})
+        self.balance_save_failed = False
+        self.update_play_state()
+
+    def choice_changed(self, identifier, selected=None):
+        if self.closing or self.stopping or self.scanning or (self.thread and self.thread.is_alive()):
             return
-        master, gains = self.mix.snapshot()
-        if master.muted or master.scalar <= 0:
+        if identifier not in {speaker.identifier for speaker in self.catalog.devices}:
             return
-        for speaker in self.catalog.devices:
-            if speaker.host in gains:
-                self.balances[speaker.identifier] = gains[speaker.host] / master.scalar
+        if selected is None:
+            selected = self.choice_vars[identifier][0].get()
+        self.selection[identifier] = bool(selected)
+        self.preferences.set_selected(identifier, bool(selected))
+        self.apply_selection()
+        if self.save_preferences():
+            self.update_play_state()
+        self.show_count()
+        self.refresh_levels()
+        if not self.preferences_failed:
+            count = len(self.selected_speakers())
+            self.status.set("请勾选参与播放的音箱。" if not count else
+                            "一次最多选择 8 台，请取消多余勾选。" if count > 8 else
+                            f"已选择 {count} 台，点击 AP2 直推开始播放。")
 
     def clear_devices(self, network):
         self.remember_balance()
+        self.save_preferences()
         self.scan_stop.set()
         self.catalog.invalidate(network)
         self.scanning = False
         self.settings = self.base_settings.for_speakers(())
+        self.selection.clear()
         self.render_devices()
         self.show_count()
         self.play.state(["disabled"])
@@ -218,6 +349,7 @@ class Window:
                 and network.fingerprint == self.network_info.fingerprint):
             return
         self.network_info = network
+        self.requested_ids = None
         logging.info("Network changed: active_interfaces=%d; old discovery invalidated",
                      len(network.addresses) if network else 0)
         self.network.set(f"Wi-Fi · {network.ssid}" if network and network.ssid else "当前局域网")
@@ -280,20 +412,24 @@ class Window:
                 raise RuntimeError("网络已变化，请重新搜索。")
             if not self.catalog.apply(token, network, devices):
                 return
-            self.settings = self.base_settings.for_speakers(self.catalog.devices, self.profiles)
-            logging.info("Discovery complete: generation=%d receivers=%d", token, len(self.settings.hosts))
-            from engine import SpeakerMix
-            self.mix = SpeakerMix(self.settings.hosts)
-            self.mix.restore_ratios({speaker.host: self.balances.get(speaker.identifier, 1.0)
-                                    for speaker in self.catalog.devices})
+            self.selection = {speaker.identifier: (speaker.identifier in (self.requested_ids or ()) if auto_start
+                              else self.preferences.selected(speaker.identifier)) for speaker in self.catalog.devices}
+            for identity, selected in self.selection.items():
+                self.preferences.set_selected(identity, selected)
+            self.apply_selection()
+            logging.info("Discovery complete: generation=%d receivers=%d selected=%d",
+                         token, len(self.catalog.devices), len(self.selected_speakers()))
             self.render_devices()
             self.show_count()
             self.refresh_levels()
-            self.status.set(f"发现 {len(self.rows)} 台音箱，点击 AP2 直推开始播放。" if self.rows
-                            else "未发现本地音箱，请确认处于同一局域网且已开启 AirPlay。")
-            if self.catalog.can_play(self.network_info):
-                self.play.state(["!disabled"])
-                if auto_start:
+            selected = len(self.selected_speakers())
+            self.status.set("未发现本地音箱，请确认处于同一局域网且已开启 AirPlay。" if not self.rows else
+                            "请勾选参与播放的音箱。" if not selected else
+                            "一次最多选择 8 台，请取消多余勾选。" if selected > 8 else
+                            f"已选择 {selected} 台，点击 AP2 直推开始播放。")
+            if self.save_preferences():
+                self.update_play_state()
+                if auto_start and 1 <= selected <= 8:
                     self.begin_playback(network)
         except Exception as exc:
             logging.warning("Discovery rejected: %s", exc)
@@ -305,20 +441,23 @@ class Window:
             self.status.set(f"搜索未完成：{exc}")
 
     def show_count(self, online=None):
-        total = len(self.rows)
-        self.count.set(f"{total} 台音箱" if online is None else f"{online}/{total} 台在线")
+        total, selected = len(self.rows), len(self.selected_speakers())
+        self.count.set(f"已选 {selected}/{total} 台" if online is None else f"{online}/{selected} 台播放")
 
     def refresh_levels(self):
         master, gains = self.mix.snapshot()
         playing = self.playing and not self.closing
         adjustable = playing and not master.muted and master.scalar > 0
+        selection_locked = self.closing or self.scanning or self.stopping or (self.thread and self.thread.is_alive())
+        for choice, check in self.choice_vars.values():
+            check.state(["disabled"] if selection_locked else ["!disabled"])
         self.refreshing_levels = True
         try:
             for host, (label, value, slider) in self.rows.items():
-                amount = gains[host] * 100 if playing else 0
+                amount = gains.get(host, 0) * 100 if playing else 0
                 value.set(amount)
-                label.set(f"{round(amount)}%" if playing else "—")
-                slider.state(["!disabled"] if adjustable else ["disabled"])
+                label.set(f"{round(amount)}%" if playing and host in gains else "—")
+                slider.state(["!disabled"] if adjustable and host in gains else ["disabled"])
         finally:
             self.refreshing_levels = False
 
@@ -326,11 +465,17 @@ class Window:
         if not self.playing or self.closing or self.refreshing_levels:
             return
         self.mix.set_speaker_percent(host, float(amount))
+        self.remember_balance()
+        self.schedule_preferences_save()
         self.refresh_levels()
 
     def start(self):
         if self.closing or self.scanning or self.stopping or (self.thread and self.thread.is_alive()):
             return
+        devices = self.selected_speakers()
+        if not 1 <= len(devices) <= 8:
+            return
+        self.requested_ids = frozenset(speaker.identifier for speaker in devices)
         # Reconfirm every endpoint before connecting, even on the same SSID.
         self.search(auto_start=True)
 
@@ -340,7 +485,8 @@ class Window:
         if (self.closing or self.stopping or self.scanning
                 or (self.thread and self.thread.is_alive())
                 or not self.catalog.can_play(network)
-                or not self.catalog.can_play(self.network_info)):
+                or not self.catalog.can_play(self.network_info)
+                or self.preferences_failed or not 1 <= len(self.settings.hosts) <= 8):
             return
         self.play.configure(text="正在连接…")
         self.play.state(["disabled"])
@@ -348,6 +494,7 @@ class Window:
         self.player = Player(self.settings, self.state_dir, self.emit, self.mix, network)
         self.thread = threading.Thread(target=self.player.run, name="playback")
         self.thread.start()
+        self.refresh_levels()
 
     def emit(self, event, value):
         self.events.put((event, value))
@@ -369,12 +516,15 @@ class Window:
     def exit_app(self):
         if self.closing:
             return
+        self.remember_balance()
+        self.save_preferences()
         self.closing = True
         self.pending_scan = None
         self.scan_stop.set()
         self.monitor_stop.set()
         self.catalog.invalidate()
         if not self.thread or not self.thread.is_alive():
+            self.warn_unsaved()
             self.root.destroy()
             return
         self.refresh_levels()
@@ -382,6 +532,11 @@ class Window:
         self.exit.configure(text="正在退出…")
         self.exit.state(["disabled"])
         self.player.stop.set()
+
+    def warn_unsaved(self):
+        if self.preferences_failed:
+            messagebox.showwarning(APP_NAME, "本次音箱设置未能保存；已有档案已保留。\n" +
+                                   getattr(self, "preferences_issue", ""), parent=self.root)
 
     def finish_stop(self, issue):
         # Player emits stopped just before returning; never overlap two senders.
@@ -393,6 +548,7 @@ class Window:
         self.show_count()
         self.refresh_levels()
         if self.closing and not issue:
+            self.warn_unsaved()
             self.root.destroy()
             return True
         was_closing = self.closing
@@ -401,7 +557,7 @@ class Window:
         self.exit.state(["!disabled"])
         self.play.configure(text="AP2 直推")
         self.scan.state(["!disabled"])
-        self.play.state(["!disabled"] if self.catalog.can_play(self.network_info) else ["disabled"])
+        self.update_play_state()
         if was_closing:
             self.monitor_stop = threading.Event()
             self.watch_network()
@@ -445,6 +601,8 @@ class Window:
                     self.show_count(value)
                     self.refresh_levels()
             elif event == "stopped":
+                self.remember_balance()
+                self.save_preferences()
                 self.playing = False
                 self.stopping = True
                 self.play.state(["disabled"])

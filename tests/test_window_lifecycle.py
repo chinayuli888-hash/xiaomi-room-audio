@@ -11,6 +11,7 @@ from device_catalog import DeviceCatalog
 from discovery import Network, Speaker
 from engine import Player, Settings, SpeakerMix
 from room_audio import Window
+from speaker_preferences import SpeakerPreferences
 
 
 HOME = Network((("192.0.2.4", "255.255.255.0"),), "same-ssid")
@@ -86,6 +87,12 @@ class WindowLifecycleTests(unittest.TestCase):
         app.refreshing_levels = False
         app.pending_scan = None
         app.balances, app.profiles = {}, {}
+        app.preferences = SpeakerPreferences(app.state_dir / "speaker_profiles.json")
+        app.profiles = app.preferences.profiles
+        app.preferences_failed = False
+        app.selection, app.choice_vars = {}, {}
+        app.mix_devices = ()
+        app.requested_ids = app.save_after = None
         app.events = SimpleQueue()
         app.player = app.thread = app.tray = None
         app.mix = SpeakerMix(())
@@ -95,7 +102,7 @@ class WindowLifecycleTests(unittest.TestCase):
         app.watch_network = Mock()
 
         def render():
-            app.rows = {host: (Value(), Value(), Button()) for host in app.settings.hosts}
+            app.rows = {speaker.host: (Value(), Value(), Button()) for speaker in app.catalog.devices}
 
         app.render_devices = render
 
@@ -106,6 +113,8 @@ class WindowLifecycleTests(unittest.TestCase):
         token = app.catalog.begin(network)
         app.catalog.apply(token, network, devices)
         app.settings = app.base_settings.for_speakers(devices)
+        app.selection = {speaker.identifier: True for speaker in devices}
+        app.mix_devices = tuple(devices)
         app.mix = SpeakerMix(app.settings.hosts)
         app.render_devices()
         return token

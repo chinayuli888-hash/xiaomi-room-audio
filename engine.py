@@ -136,6 +136,11 @@ class SpeakerMix:
     def gains(self):
         return self.snapshot()[1]
 
+    def ratios(self):
+        """Return saved balance even while muted, at zero, or group-limited."""
+        with self._lock:
+            return dict(self._ratios)
+
     def restore_ratios(self, ratios):
         """Carry the current session's balance across a fresh identity lookup."""
         with self._lock:
@@ -225,13 +230,74 @@ class Route:
             raise RuntimeError("系统已选择其他播放设备，投放已停止。")
 
 
-class Capture:
-    """DirectShow with a bounded PCM queue. Close FFmpeg through stdin."""
-    def __init__(self, ffmpeg, stderr_path):
+class CaptureBuffer:
+    """Bound latency while exposing, rather than hiding, dropped source PCM."""
+    def __init__(self):
         self._pending = bytearray()
         self._lock = threading.Lock()
         self.bytes_in = 0
         self.bytes_dropped = 0
+        self.bytes_out = self.underruns = self.drop_events = self.max_pending = 0
+        self.max_read_gap = 0.0
+        self._last_feed = None
+        self._stream_origin = None
+        self._stream_baseline = (0, 0, 0)
+
+    def feed(self, chunk):
+        now = time.perf_counter()
+        with self._lock:
+            if self._last_feed is not None:
+                self.max_read_gap = max(self.max_read_gap, now - self._last_feed)
+            self._last_feed = now
+            self.bytes_in += len(chunk)
+            self._pending.extend(chunk)
+            self.max_pending = max(self.max_pending, len(self._pending))
+            over = len(self._pending) - MAX_QUEUE
+            if over > 0:
+                trim = ((over + FRAME_BYTES - 1) // FRAME_BYTES) * FRAME_BYTES
+                del self._pending[:trim]
+                self.bytes_dropped += trim
+                self.drop_events += 1
+
+    def read(self):
+        with self._lock:
+            if len(self._pending) < FRAME_BYTES:
+                self.underruns += 1
+                return None
+            block = bytes(self._pending[:FRAME_BYTES])
+            del self._pending[:FRAME_BYTES]
+            self.bytes_out += FRAME_BYTES
+        return np.frombuffer(block, dtype="<i2")
+
+    def mark_stream_start(self):
+        with self._lock:
+            self._stream_origin = time.perf_counter()
+            self._stream_baseline = (self.bytes_in, self.bytes_dropped, self.underruns)
+
+    def stats(self):
+        with self._lock:
+            baseline_in, baseline_drop, baseline_under = self._stream_baseline
+            return {
+                "bytes_in": self.bytes_in, "bytes_out": self.bytes_out,
+                "bytes_dropped": self.bytes_dropped, "drop_events": self.drop_events,
+                "pending_bytes": len(self._pending), "queue_limit_bytes": MAX_QUEUE,
+                "max_pending_before_trim_bytes": self.max_pending,
+                "max_reader_gap_ms": round(self.max_read_gap * 1000, 3),
+                "underrun_packets": self.underruns,
+                "startup_bytes_in": baseline_in, "startup_bytes_dropped": baseline_drop,
+                "stream_bytes_in": self.bytes_in - baseline_in,
+                "stream_bytes_dropped": self.bytes_dropped - baseline_drop,
+                "stream_underrun_packets": self.underruns - baseline_under,
+                "stream_started": self._stream_origin is not None,
+                "stream_seconds": round(time.perf_counter() - self._stream_origin, 3)
+                if self._stream_origin is not None else 0.0,
+            }
+
+
+class Capture:
+    """DirectShow with a bounded PCM queue. Close FFmpeg through stdin."""
+    def __init__(self, ffmpeg, stderr_path):
+        self.buffer = CaptureBuffer()
         cmd = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostats", "-stdin",
                "-fflags", "nobuffer", "-probesize", "32", "-analyzeduration", "0",
                "-f", "dshow", "-audio_buffer_size", "40", "-i", f"audio={CAPTURE_NAME}",
@@ -245,24 +311,26 @@ class Capture:
 
     def _read(self):
         while chunk := self.process.stdout.read(4096):
-            with self._lock:
-                self.bytes_in += len(chunk)
-                self._pending.extend(chunk)
-                over = len(self._pending) - MAX_QUEUE
-                if over > 0:
-                    trim = ((over + FRAME_BYTES - 1) // FRAME_BYTES) * FRAME_BYTES
-                    del self._pending[:trim]
-                    self.bytes_dropped += trim
+            self.buffer.feed(chunk)
+
+    @property
+    def bytes_in(self):
+        return self.buffer.bytes_in
+
+    @property
+    def bytes_dropped(self):
+        return self.buffer.bytes_dropped
+
+    def mark_stream_start(self):
+        self.buffer.mark_stream_start()
+
+    def stats(self):
+        return self.buffer.stats()
 
     def read(self):
         if self.process.poll() is not None:
             raise RuntimeError("音频采集已退出。请检查 CABLE Output 和 FFmpeg。")
-        with self._lock:
-            if len(self._pending) < FRAME_BYTES:
-                return None
-            block = bytes(self._pending[:FRAME_BYTES])
-            del self._pending[:FRAME_BYTES]
-        return np.frombuffer(block, dtype="<i2")
+        return self.buffer.read()
 
     def close(self):
         p = self.process
@@ -302,6 +370,90 @@ class SystemVolume:
             self.refresh()
 
 
+class AudioControl:
+    """Own Core Audio in a separate apartment; never block the RTP provider."""
+    CHECK_INTERVAL = .75
+
+    def __init__(self, cable_id, members, publish, stop):
+        self.cable_id, self.members, self.publish, self.stop = cable_id, members, publish, stop
+        self.ready = threading.Event()
+        self.quit = threading.Event()
+        self.error = self.level = None
+        self._stats_lock = threading.Lock()
+        self._stats = {"checks": 0, "max_check_ms": 0.0, "volume_updates": 0,
+                       "max_volume_service_ms": 0.0, "shutdown_timed_out": False}
+        self.thread = threading.Thread(target=self._run, name="audio-control", daemon=True)
+
+    def _publish(self, level):
+        if not self.quit.is_set() and not self.stop.is_set():
+            self.level = level
+            self.publish(level)
+            with self._stats_lock:
+                self._stats["volume_updates"] += 1
+
+    def _check_route(self, win):
+        started = time.perf_counter()
+        if any(win.default(role).id != self.cable_id for role in MEDIA_ROLES):
+            raise RuntimeError("系统已选择其他播放设备，投放已停止。")
+        if not all(member.session.is_alive(10) for member in self.members):
+            raise RuntimeError("音箱连接已中断，请检查网络后重试。")
+        with self._stats_lock:
+            self._stats["checks"] += 1
+            self._stats["max_check_ms"] = max(self._stats["max_check_ms"],
+                                              (time.perf_counter() - started) * 1000)
+
+    def _run(self):
+        try:
+            # No WindowsAudio or endpoint pointer crosses a thread boundary.
+            with WindowsAudio() as win, win.volume(self.cable_id) as endpoint:
+                volume = SystemVolume(endpoint, self._publish)
+                self._check_route(win)
+                checked_at = time.perf_counter()
+                self.ready.set()
+                while not self.quit.is_set() and not self.stop.is_set():
+                    started = time.perf_counter()
+                    volume.service()
+                    with self._stats_lock:
+                        self._stats["max_volume_service_ms"] = max(
+                            self._stats["max_volume_service_ms"],
+                            (time.perf_counter() - started) * 1000)
+                    if time.perf_counter() - checked_at >= self.CHECK_INTERVAL:
+                        self._check_route(win)
+                        checked_at = time.perf_counter()
+                    self.quit.wait(.01)
+        except Exception as exc:
+            if not self.quit.is_set():
+                self.error = str(exc)
+                self.stop.set()
+        finally:
+            self.ready.set()
+
+    def start(self):
+        self.thread.start()
+        if not self.ready.wait(5):
+            raise RuntimeError("Windows 音量监控初始化超时。")
+        self.check()
+        if self.level is None and not self.stop.is_set():
+            raise RuntimeError("Windows 音量监控没有返回初始音量。")
+
+    def check(self):
+        if self.error:
+            raise RuntimeError(self.error)
+
+    def close(self):
+        self.quit.set()
+        if self.thread.ident is not None:
+            self.thread.join(timeout=2)
+        if self.thread.is_alive():
+            with self._stats_lock:
+                self._stats["shutdown_timed_out"] = True
+            raise RuntimeError("Windows 音量监控退出超时。")
+
+    def stats(self):
+        with self._stats_lock:
+            return dict(self._stats)
+
+
 class Player:
     def __init__(self, settings, state_dir, emit, mix, network=None):
         self.settings, self.state_dir, self.emit = settings, state_dir, emit
@@ -320,7 +472,8 @@ class Player:
         self.emit("system-volume", None)
 
     def run(self):
-        group = capture = None
+        group = capture = control = None
+        capture_report = None
         issue = None
         journal = self.state_dir / "restore.json"
         try:
@@ -353,31 +506,34 @@ class Player:
 
                     capture = Capture(self.settings.ffmpeg, self.state_dir / "ffmpeg.log")
                     route.begin(self.mix.startup_peak_ratio(receiver_levels))
-                    with win.volume(route.cable.id) as endpoint:
-                        volume = SystemVolume(endpoint, self.sync_level)
-                        checked_at = 0.0
-                        self.emit("playing", online)
-                        log.info("Playing: receivers=%d latency_mode=low lead_frames=%d initial=%d muted=%s "
-                                 "receiver_max_db=%s", online, audio.LATENCY_LOW, volume.level.percent,
-                                 volume.level.muted, list(receiver_levels.values()))
+                    control = AudioControl(route.cable.id, group.members, self.sync_level, self.stop)
+                    control.start()
+                    if self.stop.is_set():
+                        return
+                    if hasattr(capture, "mark_stream_start"):
+                        capture.mark_stream_start()
+                    self.emit("playing", online)
+                    log.info("Playing: receivers=%d latency_mode=low lead_frames=%d initial=%d muted=%s "
+                             "receiver_max_db=%s", online, audio.LATENCY_LOW, control.level.percent,
+                             control.level.muted, list(receiver_levels.values()))
 
-                        def provider():
-                            nonlocal checked_at
-                            now = time.monotonic()
-                            if now - checked_at >= 0.75:
-                                route.check()
-                                if not all(m.session.is_alive(10) for m in group.members):
-                                    raise RuntimeError("音箱连接已中断，请检查网络后重试。")
-                                checked_at = now
-                            volume.service()
-                            return capture.read()
+                    def provider():
+                        control.check()
+                        return capture.read()
 
-                        group.stream_live(provider, self.stop, record_log=False,
-                                          speaker_gains=self.mix.gains)
-                    log.info("Capture bytes=%d dropped=%d", capture.bytes_in, capture.bytes_dropped)
+                    group.stream_live(provider, self.stop, record_log=False,
+                                      speaker_gains=self.mix.gains)
+                    control.check()
                 finally:
                     self.stop.set()
-                    recover(win, journal)
+                    if capture is not None:
+                        capture_report = (capture.stats() if hasattr(capture, "stats") else
+                                          {"bytes_in": capture.bytes_in, "bytes_dropped": capture.bytes_dropped})
+                    try:
+                        if control is not None:
+                            control.close()
+                    finally:
+                        recover(win, journal)
         except Exception as exc:
             issue = str(exc)
             log.exception("Playback stopped")
@@ -391,6 +547,14 @@ class Player:
                     log.exception("Receiver teardown failed")
                     issue = issue or str(exc)
             if capture is not None:
+                capture_report = capture_report or {"bytes_in": capture.bytes_in,
+                                                    "bytes_dropped": capture.bytes_dropped}
+                log.info("Capture bytes=%d dropped=%d",
+                         capture_report["bytes_in"], capture_report["bytes_dropped"])
+                diagnostics = {"capture": capture_report,
+                               "control": control.stats() if control is not None else {},
+                               "sender": getattr(group, "live_stats", {})}
+                log.info("Audio diagnostics %s", json.dumps(diagnostics, sort_keys=True))
                 try:
                     capture.close()
                 except RuntimeError as exc:

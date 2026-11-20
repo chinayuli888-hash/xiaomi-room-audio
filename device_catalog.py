@@ -25,9 +25,10 @@ class DeviceCatalog:
             return False
         devices = tuple(devices)
         hosts = [speaker.host for speaker in devices]
-        if len(devices) > 8 or len(set(hosts)) != len(hosts):
+        identities = [speaker.identifier for speaker in devices]
+        if len(devices) > 64 or len(set(hosts)) != len(hosts) or len(set(identities)) != len(identities):
             self.devices, self.ready = (), False
-            raise ValueError("发现的音箱超过 8 台或地址重复，请检查网络设备。")
+            raise ValueError("发现的设备地址或身份重复，或超过 64 台，请检查网络设备。")
         self.devices, self.ready = devices, bool(devices)
         return True
 
